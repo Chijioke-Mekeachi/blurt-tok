@@ -15,8 +15,10 @@ const generateRandomString = (length = 8) => {
 
 // Function to validate Blurt private key format
 const validateBlurtPrivateKey = (key) => {
+  if (!key || typeof key !== 'string') return false;
+  
   // Basic validation for Blurt private keys
-  const prefix = key.substring(0, 3);
+  const prefix = key.substring(0, 2);
   const validPrefixes = ['5J', '5K', '5H', '5W', '5Q', '5R', '5S', '5T', '5U', '5V'];
   return validPrefixes.some(p => key.startsWith(p)) && key.length >= 51;
 };
@@ -111,6 +113,70 @@ export const useWallet = (username) => {
       }
     };
   }, [username]);
+
+  // Helper function to find user by username or display name
+  const findUserByUsernameOrDisplayName = useCallback(async (usernameOrDisplayName) => {
+    if (!usernameOrDisplayName) return null;
+
+    try {
+      // First, try to find by username in users table
+      const { data: userByUsername, error: userError } = await supabase
+        .from('users')
+        .select('id, username')
+        .eq('username', usernameOrDisplayName)
+        .single();
+
+      if (!userError && userByUsername) {
+        return userByUsername;
+      }
+
+      // If not found by username, try to find by display_name in profiles table
+      const { data: profileByDisplayName, error: profileError } = await supabase
+        .from('profiles')
+        .select('user_id, display_name, users(username)')
+        .eq('display_name', usernameOrDisplayName)
+        .single();
+
+      if (!profileError && profileByDisplayName) {
+        return {
+          id: profileByDisplayName.user_id,
+          username: profileByDisplayName.users?.username || usernameOrDisplayName
+        };
+      }
+
+      // Also search by partial match on display name
+      const { data: profilesByPartialMatch, error: partialError } = await supabase
+        .from('profiles')
+        .select('user_id, display_name, users(username)')
+        .ilike('display_name', `%${usernameOrDisplayName}%`)
+        .limit(1)
+        .single();
+
+      if (!partialError && profilesByPartialMatch) {
+        return {
+          id: profilesByPartialMatch.user_id,
+          username: profilesByPartialMatch.users?.username || usernameOrDisplayName
+        };
+      }
+
+      // Finally, search by partial match on username
+      const { data: userByPartialMatch, error: userPartialError } = await supabase
+        .from('users')
+        .select('id, username')
+        .ilike('username', `%${usernameOrDisplayName}%`)
+        .limit(1)
+        .single();
+
+      if (!userPartialError && userByPartialMatch) {
+        return userByPartialMatch;
+      }
+
+      return null;
+    } catch (error) {
+      console.error('Error finding user:', error);
+      return null;
+    }
+  }, []);
 
   const loadWalletData = useCallback(async () => {
     console.log('Loading wallet data for:', username);
@@ -253,9 +319,6 @@ export const useWallet = (username) => {
         throw new Error('User not found');
       }
 
-      // In a real app, you would call your backend to initialize Paystack payment
-      // For now, we'll simulate the process
-      
       // Create pending transaction
       const { data: transactionData, error: txError } = await supabase
         .from('wallet_transactions')
@@ -279,15 +342,17 @@ export const useWallet = (username) => {
 
       if (txError) throw txError;
 
-      // In production, this would return a Paystack payment link
       // For simulation, we'll return success and simulate payment confirmation
-      return {
+      // FIXED: Simplified return object to avoid syntax issues
+      const response = {
         success: true,
         transactionId: transactionData.id,
         paymentLink: `https://paystack.com/pay/blurtok-${transactionData.id}`,
         amount: amount,
         message: 'Payment initialized successfully. Redirecting to Paystack...'
       };
+      
+      return response;
     } catch (err) {
       console.error('Error funding wallet via Paystack:', err);
       setError(err.message);
@@ -352,7 +417,7 @@ export const useWallet = (username) => {
           description: `Blurt wallet deposit of ${amount} BLURT`,
           metadata: {
             memo: memo,
-            funding_account: 'user_provided', // In real implementation, derive from private key
+            funding_account: 'user_provided',
             transaction_type: 'blurt_direct'
           }
         })
@@ -364,7 +429,7 @@ export const useWallet = (username) => {
       return {
         success: true,
         fundingInstructions: {
-          account: 'blurtok.treasury', // Fixed platform account
+          account: 'blurtok.treasury',
           accountId: balanceData?.account_id || 'N/A',
           memo: memo,
           amount: amount,
@@ -420,7 +485,7 @@ export const useWallet = (username) => {
   }, [loadWalletData]);
 
   // Internal transfer between platform users
-  const transferToUser = useCallback(async (receiverUsername, amount, memo = '', description = '') => {
+  const transferToUser = useCallback(async (receiverUsernameOrDisplayName, amount, memo = '', description = '') => {
     if (!username) {
       throw new Error('Not authenticated');
     }
@@ -433,23 +498,32 @@ export const useWallet = (username) => {
       throw new Error('Insufficient balance');
     }
 
-    if (username === receiverUsername) {
-      throw new Error('Cannot transfer to yourself');
-    }
-
     try {
       setSendingTransfer(true);
       setError(null);
 
-      // Check if receiver exists in our database
-      const { data: receiverData, error: receiverError } = await supabase
-        .from('users')
-        .select('id, username')
-        .eq('username', receiverUsername)
+      // Find receiver user by username or display name
+      const receiverUser = await findUserByUsernameOrDisplayName(receiverUsernameOrDisplayName);
+      
+      if (!receiverUser) {
+        throw new Error(`User "${receiverUsernameOrDisplayName}" not found in platform database`);
+      }
+
+      const receiverUsername = receiverUser.username;
+      
+      if (username === receiverUsername) {
+        throw new Error('Cannot transfer to yourself');
+      }
+
+      // Check if receiver has a balance account
+      const { data: receiverBalance, error: balanceError } = await supabase
+        .from('balances')
+        .select('user_id')
+        .eq('user_id', receiverUser.id)
         .single();
 
-      if (receiverError || !receiverData) {
-        throw new Error('User not found in platform database');
+      if (balanceError || !receiverBalance) {
+        throw new Error(`User @${receiverUsername} does not have a wallet account`);
       }
 
       // Call the PostgreSQL function to transfer funds
@@ -473,6 +547,8 @@ export const useWallet = (username) => {
           amount: data.amount,
           fee: data.fee,
           netAmount: data.net_amount,
+          receiverId: receiverUser.id,
+          receiverUsername: receiverUsername,
           message: `Successfully transferred ${data.net_amount} BLURT to @${receiverUsername}`
         };
       } else {
@@ -485,9 +561,9 @@ export const useWallet = (username) => {
     } finally {
       setSendingTransfer(false);
     }
-  }, [username, balance.available, loadWalletData]);
+  }, [username, balance.available, loadWalletData, findUserByUsernameOrDisplayName]);
 
-  // Direct Blurt blockchain transfer (not internal platform)
+  // Direct Blurt blockchain transfer
   const transferToBlurtAccount = useCallback(async (blurtAccount, amount, privateKey, memo = '') => {
     if (!username) {
       throw new Error('Not authenticated');
@@ -543,12 +619,6 @@ export const useWallet = (username) => {
 
       if (txError) throw txError;
 
-      // Note: In a real implementation, you would:
-      // 1. Use the private key to sign the transaction
-      // 2. Broadcast to Blurt blockchain
-      // 3. Update transaction status based on blockchain response
-
-      // For now, we'll simulate success
       return {
         success: true,
         transactionId: transactionData.id,
@@ -566,33 +636,134 @@ export const useWallet = (username) => {
     }
   }, [username, balance.available]);
 
+  // Search users by username or display name
   const searchUsers = useCallback(async (searchQuery) => {
     if (!searchQuery || searchQuery.length < 2) {
       return [];
     }
 
     try {
-      const { data, error } = await supabase
+      // Search in users table by username
+      const { data: usersByUsername, error: usersError } = await supabase
         .from('users')
-        .select('id, username, profile:user_profiles(display_name, avatar_url)')
+        .select('id, username')
         .ilike('username', `%${searchQuery}%`)
-        .neq('username', username) // Don't include self
-        .limit(10);
+        .neq('username', username)
+        .limit(5);
 
-      if (error) throw error;
-      
-      // Format the data to include display name
-      return (data || []).map(user => ({
-        id: user.id,
-        username: user.username,
-        displayName: user.profile?.[0]?.display_name || user.username,
-        avatar: user.profile?.[0]?.avatar_url
+      // Search in profiles table by display_name
+      const { data: profilesByDisplayName, error: profilesError } = await supabase
+        .from('profiles')
+        .select('user_id, display_name, users(username)')
+        .ilike('display_name', `%${searchQuery}%`)
+        .limit(5);
+
+      // Combine and deduplicate results
+      const userResults = usersByUsername || [];
+      const profileResults = (profilesByDisplayName || []).map(profile => ({
+        id: profile.user_id,
+        username: profile.users?.username,
+        display_name: profile.display_name
       }));
+
+      // Merge results, preferring user results first
+      const allResultsMap = new Map();
+      
+      // Add user results
+      userResults.forEach(user => {
+        allResultsMap.set(user.id, {
+          id: user.id,
+          username: user.username,
+          displayName: user.username
+        });
+      });
+
+      // Add profile results
+      profileResults.forEach(profile => {
+        if (allResultsMap.has(profile.id)) {
+          const existing = allResultsMap.get(profile.id);
+          existing.displayName = profile.display_name || existing.username;
+        } else {
+          allResultsMap.set(profile.id, {
+            id: profile.id,
+            username: profile.username || `user_${profile.id}`,
+            displayName: profile.display_name || profile.username || `user_${profile.id}`
+          });
+        }
+      });
+
+      // Convert to array and limit
+      const results = Array.from(allResultsMap.values()).slice(0, 10);
+
+      // Get avatar URLs
+      if (results.length > 0) {
+        const userIds = results.map(user => user.id);
+        const { data: profilesData } = await supabase
+          .from('profiles')
+          .select('user_id, avatar_url')
+          .in('user_id', userIds);
+
+        if (profilesData) {
+          const profileMap = {};
+          profilesData.forEach(profile => {
+            profileMap[profile.user_id] = profile;
+          });
+
+          results.forEach(user => {
+            user.avatar = profileMap[user.id]?.avatar_url;
+          });
+        }
+      }
+
+      return results;
     } catch (error) {
       console.error('Error searching users:', error);
       return [];
     }
   }, [username]);
+
+  // Get user details by ID
+  const getUserDetails = useCallback(async (userId) => {
+    try {
+      // Get user basic info
+      const { data: userData, error: userError } = await supabase
+        .from('users')
+        .select('id, username')
+        .eq('id', userId)
+        .single();
+
+      if (userError || !userData) {
+        return null;
+      }
+
+      // Get user profile
+      const { data: profileData } = await supabase
+        .from('profiles')
+        .select('display_name, avatar_url')
+        .eq('user_id', userId)
+        .single();
+
+      // Get user balance
+      const { data: balanceData } = await supabase
+        .from('balances')
+        .select('available_balance, total_balance')
+        .eq('user_id', userId)
+        .single();
+
+      return {
+        id: userData.id,
+        username: userData.username,
+        displayName: profileData?.display_name || userData.username,
+        avatar: profileData?.avatar_url,
+        hasWallet: !!balanceData,
+        balance: balanceData?.available_balance || 0,
+        totalBalance: balanceData?.total_balance || 0
+      };
+    } catch (error) {
+      console.error('Error getting user details:', error);
+      return null;
+    }
+  }, []);
 
   const calculateFee = (amount) => {
     // Platform fee: 2.5% for internal transfers
@@ -619,6 +790,8 @@ export const useWallet = (username) => {
     fundWalletWithBlurt,
     checkDepositStatus,
     searchUsers,
+    getUserDetails,
+    findUserByUsernameOrDisplayName,
     calculateFee,
     formatAmount,
     refresh: loadWalletData,

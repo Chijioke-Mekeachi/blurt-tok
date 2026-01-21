@@ -91,16 +91,32 @@ const extractVideoUrl = (post) => {
 
 const getPlaceholderVideoUrl = (author) => {
   const placeholderVideos = [
+    // Google sample videos
     'https://commondatastorage.googleapis.com/gtv-videos-bucket/sample/BigBuckBunny.mp4',
     'https://commondatastorage.googleapis.com/gtv-videos-bucket/sample/ElephantsDream.mp4',
     'https://commondatastorage.googleapis.com/gtv-videos-bucket/sample/ForBiggerBlazes.mp4',
     'https://commondatastorage.googleapis.com/gtv-videos-bucket/sample/ForBiggerEscapes.mp4',
     'https://commondatastorage.googleapis.com/gtv-videos-bucket/sample/ForBiggerFun.mp4',
+    'https://commondatastorage.googleapis.com/gtv-videos-bucket/sample/ForBiggerJoyrides.mp4',
+    'https://commondatastorage.googleapis.com/gtv-videos-bucket/sample/ForBiggerMeltdowns.mp4',
+    'https://commondatastorage.googleapis.com/gtv-videos-bucket/sample/Sintel.mp4',
+    'https://commondatastorage.googleapis.com/gtv-videos-bucket/sample/TearsOfSteel.mp4',
+
+    // W3Schools
+    'https://www.w3schools.com/html/mov_bbb.mp4',
+
+    // Sample-videos (CDN-backed)
+    'https://sample-videos.com/video321/mp4/720/big_buck_bunny_720p_1mb.mp4',
+    'https://sample-videos.com/video321/mp4/720/big_buck_bunny_720p_5mb.mp4',
   ];
 
-  const index = author.split('').reduce((acc, char) => acc + char.charCodeAt(0), 0) % placeholderVideos.length;
+  const index =
+    author.split('').reduce((acc, char) => acc + char.charCodeAt(0), 0) %
+    placeholderVideos.length;
+
   return placeholderVideos[index];
 };
+
 
 // ------------------- Fallback Videos -------------------
 
@@ -162,6 +178,49 @@ const getFallbackVideos = (tag) => {
       rewards_total: 34.56,
       duration: 75,
     },
+    {
+  id: 'fallback_5',
+  blurt_tx: 'tx_fallback_5',
+  caption: 'Web3 dev life on Blurt 🚀',
+  video_url: 'https://commondatastorage.googleapis.com/gtv-videos-bucket/sample/Sintel.mp4',
+  thumbnail: 'https://images.hive.blog/u/web3dev/avatar',
+  user: { username: 'web3dev' },
+  tags: [tag, 'web3', 'dev'],
+  created_at: new Date(Date.now() - 360000000).toISOString(),
+  likes_count: 1543,
+  comments_count: 132,
+  rewards_total: 51.12,
+  duration: 52,
+},
+{
+  id: 'fallback_6',
+  blurt_tx: 'tx_fallback_6',
+  caption: 'Short cinematic clip 🎬 #reels',
+  video_url: 'https://commondatastorage.googleapis.com/gtv-videos-bucket/sample/TearsOfSteel.mp4',
+  thumbnail: 'https://images.hive.blog/u/filmmaker/avatar',
+  user: { username: 'filmmaker' },
+  tags: [tag, 'cinematic', 'reels'],
+  created_at: new Date(Date.now() - 432000000).toISOString(),
+  likes_count: 2789,
+  comments_count: 201,
+  rewards_total: 88.41,
+  duration: 70,
+},
+{
+  id: 'fallback_7',
+  blurt_tx: 'tx_fallback_7',
+  caption: 'Daily coding motivation 💻',
+  video_url: 'https://www.w3schools.com/html/mov_bbb.mp4',
+  thumbnail: 'https://images.hive.blog/u/coderlife/avatar',
+  user: { username: 'coderlife' },
+  tags: [tag, 'coding', 'motivation'],
+  created_at: new Date(Date.now() - 518400000).toISOString(),
+  likes_count: 987,
+  comments_count: 54,
+  rewards_total: 19.73,
+  duration: 35,
+}
+
   ];
 
   return fallbackVideos.filter(video => video.tags.includes(tag));

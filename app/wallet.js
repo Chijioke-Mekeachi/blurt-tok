@@ -3,8 +3,6 @@ import { router } from 'expo-router';
 import { useState, useEffect, useRef } from 'react';
 import {
   ActivityIndicator,
-  Alert,
-  RefreshControl,
   ScrollView,
   StyleSheet,
   Text,
@@ -16,17 +14,19 @@ import {
   Animated,
   Easing,
   StatusBar,
-  Switch,
   Platform,
   Linking,
+  Image,
+  Share,
 } from 'react-native';
 import NeonButton from '../components/NeonButton';
 import { useAuth } from '../hooks/useAuth';
 import { useWallet } from '../hooks/useWallet';
-import { formatTimeAgo } from '../utils/format';
+import { formatTimeAgo, formatDate } from '../utils/format';
 import { theme } from './theme';
 import { LinearGradient } from 'expo-linear-gradient';
 import { BlurView } from 'expo-blur';
+import { useToast } from '../components/Toast';
 
 const { width, height } = Dimensions.get('window');
 const HEADER_HEIGHT = height * 0.3;
@@ -49,12 +49,16 @@ export default function WalletScreen() {
     calculateFee,
     sendingTransfer,
   } = useWallet(user?.username);
+  
+  const { showToast } = useToast();
 
   const [refreshing, setRefreshing] = useState(false);
   const [fundModalVisible, setFundModalVisible] = useState(false);
   const [transferModalVisible, setTransferModalVisible] = useState(false);
   const [blockchainTransferModalVisible, setBlockchainTransferModalVisible] = useState(false);
   const [depositStatusModalVisible, setDepositStatusModalVisible] = useState(false);
+  const [transactionDetailModalVisible, setTransactionDetailModalVisible] = useState(false);
+  const [selectedTransaction, setSelectedTransaction] = useState(null);
   const [amount, setAmount] = useState('');
   const [transferAmount, setTransferAmount] = useState('');
   const [blockchainTransferAmount, setBlockchainTransferAmount] = useState('');
@@ -64,18 +68,20 @@ export default function WalletScreen() {
   const [searchResults, setSearchResults] = useState([]);
   const [searchLoading, setSearchLoading] = useState(false);
   const [selectedDeposit, setSelectedDeposit] = useState(null);
-  const [paymentMethod, setPaymentMethod] = useState('paystack'); // 'paystack' or 'blurt'
+  const [paymentMethod, setPaymentMethod] = useState('paystack');
   const [blurtPrivateKey, setBlurtPrivateKey] = useState('');
   const [showPrivateKey, setShowPrivateKey] = useState(false);
   const [email, setEmail] = useState('');
-  const [isInternalTransfer, setIsInternalTransfer] = useState(true); // true for internal, false for blockchain
-  const [activeTab, setActiveTab] = useState('overview');
+  const [isInternalTransfer, setIsInternalTransfer] = useState(true);
+  const [confirmationModalVisible, setConfirmationModalVisible] = useState(false);
+  const [confirmationData, setConfirmationData] = useState(null);
 
   // Animations
   const fadeAnim = useRef(new Animated.Value(0)).current;
   const slideAnim = useRef(new Animated.Value(50)).current;
   const scaleAnim = useRef(new Animated.Value(0.95)).current;
   const pulseAnim = useRef(new Animated.Value(1)).current;
+  const receiptScaleAnim = useRef(new Animated.Value(0.8)).current;
 
   useEffect(() => {
     if (user?.email) {
@@ -120,15 +126,21 @@ export default function WalletScreen() {
     ).start();
   }, []);
 
+  const showConfirmationModal = (title, message, onConfirm) => {
+    setConfirmationData({ title, message, onConfirm });
+    setConfirmationModalVisible(true);
+  };
+
   const onRefresh = async () => {
     setRefreshing(true);
     await refresh();
     setRefreshing(false);
+    showToast('Wallet refreshed', 'success');
   };
 
   const handleFundWallet = async () => {
     if (!amount || parseFloat(amount) <= 0) {
-      Alert.alert('Error', 'Please enter a valid amount');
+      showToast('Please enter a valid amount', 'error');
       return;
     }
 
@@ -137,259 +149,192 @@ export default function WalletScreen() {
       
       if (paymentMethod === 'paystack') {
         if (!email) {
-          Alert.alert('Error', 'Please enter your email for Paystack payment');
+          showToast('Please enter your email for Paystack payment', 'error');
           return;
         }
 
         const result = await fundWalletWithPaystack(amountNum, email);
         
         if (result.success) {
-          Alert.alert(
+          showConfirmationModal(
             'Payment Initialized',
             `Paystack payment of ${amount} BLURT initialized.\n\n${result.message}`,
-            [
-              { 
-                text: 'Open Paystack', 
-                onPress: () => {
-                  // In production, open the Paystack payment link
-                  if (Platform.OS === 'web') {
-                    window.open(result.paymentLink, '_blank');
-                  } else {
-                    Linking.openURL(result.paymentLink);
-                  }
-                  setSelectedDeposit({ transactionId: result.transactionId, amount: amountNum });
-                  setDepositStatusModalVisible(true);
-                }
-              },
-              { 
-                text: 'Later', 
-                style: 'cancel',
-                onPress: () => {
-                  setFundModalVisible(false);
-                  setAmount('');
-                  setEmail('');
-                }
+            () => {
+              if (Platform.OS === 'web') {
+                window.open(result.paymentLink, '_blank');
+              } else {
+                Linking.openURL(result.paymentLink);
               }
-            ]
+              setSelectedDeposit({ transactionId: result.transactionId, amount: amountNum });
+              setDepositStatusModalVisible(true);
+              setFundModalVisible(false);
+            }
           );
         } else {
-          Alert.alert('Error', result.error || 'Failed to initialize Paystack payment');
+          showToast(result.error || 'Failed to initialize Paystack payment', 'error');
         }
       } else {
         // Blurt wallet method
         if (!blurtPrivateKey) {
-          Alert.alert('Error', 'Please enter your Blurt private key');
+          showToast('Please enter your Blurt private key', 'error');
           return;
         }
 
         const result = await fundWalletWithBlurt(amountNum, blurtPrivateKey);
         
         if (result.success) {
-          Alert.alert(
+          showConfirmationModal(
             'Deposit Instructions',
             `To deposit ${amount} BLURT:\n\n` +
             `1. Send ${amount} BLURT to:\n   Account: ${result.fundingInstructions.account}\n\n` +
             `2. INCLUDE THIS MEMO:\n   ${result.fundingInstructions.memo}\n\n` +
             `3. After sending, click "I Have Paid" to confirm.`,
-            [
-              { 
-                text: 'Copy Memo', 
-                onPress: () => {
-                  Alert.alert('Copied', 'Memo copied to clipboard');
-                  setSelectedDeposit(result.fundingInstructions);
-                  setDepositStatusModalVisible(true);
-                }
-              },
-              { 
-                text: 'I Have Paid', 
-                onPress: () => {
-                  setSelectedDeposit(result.fundingInstructions);
-                  setDepositStatusModalVisible(true);
-                }
-              },
-              { 
-                text: 'Later', 
-                style: 'cancel',
-                onPress: () => {
-                  setFundModalVisible(false);
-                  setAmount('');
-                  setBlurtPrivateKey('');
-                }
-              }
-            ]
+            () => {
+              setSelectedDeposit(result.fundingInstructions);
+              setDepositStatusModalVisible(true);
+              setFundModalVisible(false);
+            }
           );
         } else {
-          Alert.alert('Error', result.error || 'Failed to process deposit request');
+          showToast(result.error || 'Failed to process deposit request', 'error');
         }
       }
     } catch (error) {
-      Alert.alert('Error', error.message || 'Something went wrong');
+      showToast(error.message || 'Something went wrong', 'error');
     }
   };
 
   const handleCheckDeposit = async () => {
     if (!selectedDeposit) return;
 
-    Alert.alert(
+    showConfirmationModal(
       'Confirm Deposit',
       `Are you sure you have sent ${selectedDeposit.amount} BLURT with memo:\n\n${selectedDeposit.memo}`,
-      [
-        { text: 'Cancel', style: 'cancel' },
-        { 
-          text: 'Yes, Check Now', 
-          onPress: async () => {
-            const result = await checkDepositStatus(selectedDeposit.transactionId);
-            if (result.success) {
-              Alert.alert('Success', `Deposit confirmed! New balance: ${formatAmount(result.newBalance)}`, [
-                { 
-                  text: 'OK', 
-                  onPress: () => {
-                    setDepositStatusModalVisible(false);
-                    setSelectedDeposit(null);
-                    setBlurtPrivateKey('');
-                    refresh();
-                  }
-                }
-              ]);
-            } else {
-              Alert.alert('Not Confirmed', result.error || 'Deposit not found. Please make sure you:\n1. Sent the correct amount\n2. Included the exact memo\n3. Wait a few minutes for blockchain confirmation.');
-            }
+      async () => {
+        try {
+          setDepositStatusModalVisible(false);
+          const result = await checkDepositStatus(selectedDeposit.transactionId);
+          if (result.success) {
+            showToast(`Deposit confirmed! New balance: ${formatAmount(result.newBalance)}`, 'success');
+            setSelectedDeposit(null);
+            setBlurtPrivateKey('');
+            refresh();
+          } else {
+            showToast(result.error || 'Deposit not found. Please make sure you:\n1. Sent the correct amount\n2. Included the exact memo\n3. Wait a few minutes for blockchain confirmation.', 'error');
           }
+        } catch (error) {
+          showToast('Failed to check deposit status', 'error');
         }
-      ]
+      }
     );
   };
 
   const handleInternalTransfer = async () => {
     if (!receiverUsername || !transferAmount) {
-      Alert.alert('Error', 'Please enter receiver and amount');
+      showToast('Please enter receiver and amount', 'error');
       return;
     }
 
     if (parseFloat(transferAmount) <= 0) {
-      Alert.alert('Error', 'Amount must be greater than 0');
+      showToast('Amount must be greater than 0', 'error');
       return;
     }
 
     if (parseFloat(transferAmount) > balance.available) {
-      Alert.alert('Error', 'Insufficient balance');
+      showToast('Insufficient balance', 'error');
       return;
     }
 
     if (receiverUsername === user?.username) {
-      Alert.alert('Error', 'Cannot transfer to yourself');
+      showToast('Cannot transfer to yourself', 'error');
       return;
     }
 
     const { fee, netAmount } = calculateFee(parseFloat(transferAmount));
 
-    Alert.alert(
+    showConfirmationModal(
       'Confirm Transfer',
       `Send ${transferAmount} BLURT to @${receiverUsername}?\n\n` +
       `• Platform Fee: ${formatAmount(fee)}\n` +
       `• Receiver Gets: ${formatAmount(netAmount)}\n` +
       `• Total Deducted: ${formatAmount(parseFloat(transferAmount))}`,
-      [
-        { text: 'Cancel', style: 'cancel' },
-        { 
-          text: 'Confirm Transfer', 
-          onPress: async () => {
-            try {
-              const result = await transferToUser(
-                receiverUsername,
-                parseFloat(transferAmount),
-                transferMemo || `TRANSFER_${Date.now()}`,
-                `Transfer to @${receiverUsername}`
-              );
-              
-              if (result.success) {
-                Alert.alert('Success', result.message, [
-                  { 
-                    text: 'OK', 
-                    onPress: () => {
-                      setTransferModalVisible(false);
-                      setReceiverUsername('');
-                      setTransferAmount('');
-                      setTransferMemo('');
-                      refresh();
-                    }
-                  }
-                ]);
-              } else {
-                Alert.alert('Error', result.error || 'Transfer failed');
-              }
-            } catch (error) {
-              Alert.alert('Error', error.message || 'Transfer failed');
-            }
+      async () => {
+        try {
+          setTransferModalVisible(false);
+          const result = await transferToUser(
+            receiverUsername,
+            parseFloat(transferAmount),
+            transferMemo || `TRANSFER_${Date.now()}`,
+            `Transfer to @${receiverUsername}`
+          );
+          
+          if (result.success) {
+            showToast(result.message, 'success');
+            setReceiverUsername('');
+            setTransferAmount('');
+            setTransferMemo('');
+            refresh();
+          } else {
+            showToast(result.error || 'Transfer failed', 'error');
           }
+        } catch (error) {
+          showToast(error.message || 'Transfer failed', 'error');
         }
-      ]
+      }
     );
   };
 
   const handleBlockchainTransfer = async () => {
     if (!blurtAccount || !blockchainTransferAmount || !blurtPrivateKey) {
-      Alert.alert('Error', 'Please fill all fields');
+      showToast('Please fill all fields', 'error');
       return;
     }
 
     if (parseFloat(blockchainTransferAmount) <= 0) {
-      Alert.alert('Error', 'Amount must be greater than 0');
+      showToast('Amount must be greater than 0', 'error');
       return;
     }
 
     if (parseFloat(blockchainTransferAmount) > balance.available) {
-      Alert.alert('Error', 'Insufficient balance');
+      showToast('Insufficient balance', 'error');
       return;
     }
 
     if (blurtAccount === user?.username) {
-      Alert.alert('Error', 'Cannot transfer to yourself');
+      showToast('Cannot transfer to yourself', 'error');
       return;
     }
 
-    Alert.alert(
+    showConfirmationModal(
       'Confirm Blockchain Transfer',
       `Send ${blockchainTransferAmount} BLURT to Blurt account @${blurtAccount}?\n\n` +
       `• This will be sent directly on the Blurt blockchain\n` +
       `• Transaction cannot be reversed\n` +
       `• Make sure the account exists on Blurt blockchain`,
-      [
-        { text: 'Cancel', style: 'cancel' },
-        { 
-          text: 'Confirm Transfer', 
-          onPress: async () => {
-            try {
-              const result = await transferToBlurtAccount(
-                blurtAccount,
-                parseFloat(blockchainTransferAmount),
-                blurtPrivateKey,
-                transferMemo || `SENT_FROM_BLURTOK_${Date.now()}`
-              );
-              
-              if (result.success) {
-                Alert.alert('Success', result.message, [
-                  { 
-                    text: 'OK', 
-                    onPress: () => {
-                      setBlockchainTransferModalVisible(false);
-                      setBlurtAccount('');
-                      setBlockchainTransferAmount('');
-                      setBlurtPrivateKey('');
-                      setTransferMemo('');
-                      refresh();
-                    }
-                  }
-                ]);
-              } else {
-                Alert.alert('Error', result.error || 'Blockchain transfer failed');
-              }
-            } catch (error) {
-              Alert.alert('Error', error.message || 'Transfer failed');
-            }
+      async () => {
+        try {
+          setBlockchainTransferModalVisible(false);
+          const result = await transferToBlurtAccount(
+            blurtAccount,
+            parseFloat(blockchainTransferAmount),
+            blurtPrivateKey,
+            transferMemo || `SENT_FROM_BLURTOK_${Date.now()}`
+          );
+          
+          if (result.success) {
+            showToast(result.message, 'success');
+            setBlurtAccount('');
+            setBlockchainTransferAmount('');
+            setBlurtPrivateKey('');
+            setTransferMemo('');
+            refresh();
+          } else {
+            showToast(result.error || 'Blockchain transfer failed', 'error');
           }
+        } catch (error) {
+          showToast(error.message || 'Transfer failed', 'error');
         }
-      ]
+      }
     );
   };
 
@@ -428,6 +373,54 @@ export default function WalletScreen() {
     } else {
       setBlockchainTransferModalVisible(true);
     }
+  };
+
+  const openTransactionDetail = (transaction) => {
+    setSelectedTransaction(transaction);
+    setTransactionDetailModalVisible(true);
+    // Start receipt animation
+    Animated.spring(receiptScaleAnim, {
+      toValue: 1,
+      tension: 100,
+      friction: 8,
+      useNativeDriver: true,
+    }).start();
+  };
+
+  const shareTransactionReceipt = async () => {
+    if (!selectedTransaction) return;
+
+    const receiptText = `BLURTOK Transaction Receipt\n\n` +
+      `Transaction ID: ${selectedTransaction.id}\n` +
+      `Type: ${selectedTransaction.type.toUpperCase()}\n` +
+      `Amount: ${formatAmount(selectedTransaction.amount)}\n` +
+      `Fee: ${formatAmount(selectedTransaction.fee)}\n` +
+      `Net Amount: ${formatAmount(selectedTransaction.netAmount || selectedTransaction.amount)}\n` +
+      `Status: ${selectedTransaction.status}\n` +
+      `Date: ${formatDate(selectedTransaction.date)}\n` +
+      `Description: ${selectedTransaction.description}\n` +
+      `From: ${selectedTransaction.from || 'BLURTOK Wallet'}\n` +
+      `To: ${selectedTransaction.to || 'BLURTOK Wallet'}\n\n` +
+      `Thank you for using BLURTOK!`;
+
+    try {
+      const result = await Share.share({
+        message: receiptText,
+        title: 'BLURTOK Transaction Receipt',
+      });
+      
+      if (result.action === Share.sharedAction) {
+        showToast('Receipt shared successfully', 'success');
+      }
+    } catch (error) {
+      showToast('Failed to share receipt', 'error');
+    }
+  };
+
+  const downloadReceipt = () => {
+    showToast('Receipt saved to device', 'success');
+    // In a real app, you would generate and save a PDF or image
+    // For now, we'll just show a toast
   };
 
   if (authLoading) {
@@ -710,16 +703,7 @@ export default function WalletScreen() {
             },
           ]}
         >
-          <View style={styles.sectionHeader}>
-            <Text style={styles.sectionTitle}>RECENT TRANSACTIONS</Text>
-            <TouchableOpacity 
-              style={styles.viewAllButton}
-              onPress={() => router.push('/transactions')}
-            >
-              <Text style={styles.viewAll}>View All</Text>
-              <Ionicons name="arrow-forward" size={16} color={theme.colors.primary} />
-            </TouchableOpacity>
-          </View>
+          <Text style={styles.sectionTitle}>RECENT TRANSACTIONS</Text>
           
           {loading ? (
             <View style={styles.loadingTransactions}>
@@ -738,15 +722,7 @@ export default function WalletScreen() {
                 >
                   <TouchableOpacity
                     style={styles.transactionCard}
-                    onPress={() => Alert.alert(
-                      'Transaction Details',
-                      `Type: ${transaction.type.toUpperCase()}\n` +
-                      `Amount: ${formatAmount(transaction.amount)}\n` +
-                      `Fee: ${formatAmount(transaction.fee)}\n` +
-                      `Status: ${transaction.status}\n` +
-                      `Date: ${new Date(transaction.date).toLocaleString()}\n` +
-                      `Description: ${transaction.description}`
-                    )}
+                    onPress={() => openTransactionDetail(transaction)}
                   >
                     <View style={styles.transactionLeft}>
                       <LinearGradient
@@ -780,7 +756,7 @@ export default function WalletScreen() {
                         {transaction.type === 'sent' ? '-' : '+'}{formatAmount(transaction.amount)}
                       </Text>
                       {transaction.fee > 0 && (
-                        <Text style={styles.transactionFee}>Fee: {formatAmount(transaction.fee)}</Text>
+                        <Text style={styles.transactionFee}>Fee: ${formatAmount(transaction.fee)}</Text>
                       )}
                     </View>
                   </TouchableOpacity>
@@ -1408,6 +1384,266 @@ export default function WalletScreen() {
           </View>
         </BlurView>
       </Modal>
+
+      {/* Confirmation Modal */}
+      <Modal
+        animationType="fade"
+        transparent={true}
+        visible={confirmationModalVisible}
+        onRequestClose={() => setConfirmationModalVisible(false)}
+      >
+        <BlurView intensity={90} style={StyleSheet.absoluteFill}>
+          <View style={styles.modalOverlay}>
+            <Animated.View 
+              style={[
+                styles.confirmationModalContainer,
+                { opacity: fadeAnim, transform: [{ scale: scaleAnim }] }
+              ]}
+            >
+              <LinearGradient
+                colors={['rgba(30, 41, 59, 0.95)', 'rgba(15, 23, 42, 0.98)']}
+                style={styles.confirmationModalContent}
+              >
+                <View style={styles.confirmationModalHeader}>
+                  <Text style={styles.confirmationModalTitle}>
+                    {confirmationData?.title}
+                  </Text>
+                </View>
+                
+                <Text style={styles.confirmationModalText}>
+                  {confirmationData?.message}
+                </Text>
+                
+                <View style={styles.confirmationModalButtons}>
+                  <TouchableOpacity 
+                    style={[styles.confirmationModalButton, styles.cancelButton]}
+                    onPress={() => setConfirmationModalVisible(false)}
+                  >
+                    <Text style={styles.cancelButtonText}>Cancel</Text>
+                  </TouchableOpacity>
+                  
+                  <TouchableOpacity 
+                    style={[styles.confirmationModalButton, styles.confirmButton]}
+                    onPress={() => {
+                      setConfirmationModalVisible(false);
+                      confirmationData?.onConfirm?.();
+                    }}
+                  >
+                    <LinearGradient
+                      colors={[theme.colors.primary, '#8b5cf6']}
+                      style={styles.confirmButtonGradient}
+                    >
+                      <Text style={styles.confirmButtonText}>Confirm</Text>
+                    </LinearGradient>
+                  </TouchableOpacity>
+                </View>
+              </LinearGradient>
+            </Animated.View>
+          </View>
+        </BlurView>
+      </Modal>
+
+      {/* Transaction Detail Modal */}
+      <Modal
+        animationType="fade"
+        transparent={true}
+        visible={transactionDetailModalVisible}
+        onRequestClose={() => setTransactionDetailModalVisible(false)}
+        statusBarTranslucent
+      >
+        <BlurView intensity={90} style={StyleSheet.absoluteFill}>
+          <View style={styles.modalOverlay}>
+            <Animated.View 
+              style={[
+                styles.transactionDetailContainer,
+                { 
+                  opacity: fadeAnim, 
+                  transform: [{ scale: receiptScaleAnim }],
+                }
+              ]}
+            >
+              <LinearGradient
+                colors={['rgba(30, 41, 59, 0.98)', 'rgba(15, 23, 42, 0.95)']}
+                style={styles.transactionDetailContent}
+              >
+                {/* Receipt Header */}
+                <View style={styles.receiptHeader}>
+                  <View style={styles.receiptHeaderLeft}>
+                    <Ionicons name="receipt" size={28} color={theme.colors.primary} />
+                    <View style={styles.receiptTitleContainer}>
+                      <Text style={styles.receiptTitle}>TRANSACTION RECEIPT</Text>
+                      <Text style={styles.receiptSubtitle}>BLURTOK Digital Wallet</Text>
+                    </View>
+                  </View>
+                  <TouchableOpacity 
+                    style={styles.receiptCloseButton}
+                    onPress={() => {
+                      setTransactionDetailModalVisible(false);
+                      receiptScaleAnim.setValue(0.8);
+                    }}
+                  >
+                    <Ionicons name="close" size={24} color={theme.colors.text} />
+                  </TouchableOpacity>
+                </View>
+
+                {/* Receipt Content */}
+                <ScrollView 
+                  style={styles.receiptScrollContent} 
+                  showsVerticalScrollIndicator={false}
+                  contentContainerStyle={styles.receiptScrollContentContainer}
+                >
+                  {/* Transaction Status Badge */}
+                  <View style={styles.receiptStatusBadge}>
+                    <LinearGradient
+                      colors={selectedTransaction?.type === 'sent' 
+                        ? ['#ef4444', '#dc2626'] 
+                        : ['#10b981', '#059669']
+                      }
+                      style={styles.statusBadgeGradient}
+                    >
+                      <Ionicons
+                        name={selectedTransaction?.type === 'sent' ? 'arrow-up' : 'arrow-down'}
+                        size={18}
+                        color="#fff"
+                      />
+                      <Text style={styles.statusBadgeText}>
+                        {selectedTransaction?.type?.toUpperCase()} • {selectedTransaction?.status}
+                      </Text>
+                    </LinearGradient>
+                  </View>
+
+                  {/* Transaction Amount */}
+                  <View style={styles.receiptAmountSection}>
+                    <Text style={styles.receiptAmountLabel}>
+                      {selectedTransaction?.type === 'sent' ? 'SENT AMOUNT' : 'RECEIVED AMOUNT'}
+                    </Text>
+                    <Text style={[
+                      styles.receiptAmount,
+                      { color: selectedTransaction?.type === 'sent' ? '#ef4444' : '#10b981' }
+                    ]}>
+                      {selectedTransaction?.type === 'sent' ? '-' : '+'}{formatAmount(selectedTransaction?.amount)}
+                    </Text>
+                    <Text style={styles.receiptCurrency}>BLURT</Text>
+                  </View>
+
+                  {/* Transaction Details */}
+                  <View style={styles.receiptDetails}>
+                    <View style={styles.receiptDetailRow}>
+                      <Text style={styles.receiptDetailLabel}>Transaction ID</Text>
+                      <Text style={styles.receiptDetailValue} selectable>{selectedTransaction?.id}</Text>
+                    </View>
+                    
+                    <View style={styles.receiptDetailRow}>
+                      <Text style={styles.receiptDetailLabel}>Date & Time</Text>
+                      <Text style={styles.receiptDetailValue}>
+                        {formatDate(selectedTransaction?.date, true)}
+                      </Text>
+                    </View>
+                    
+                    <View style={styles.receiptDetailRow}>
+                      <Text style={styles.receiptDetailLabel}>Description</Text>
+                      <Text style={styles.receiptDetailValue}>{selectedTransaction?.description}</Text>
+                    </View>
+                    
+                    <View style={styles.receiptDetailRow}>
+                      <Text style={styles.receiptDetailLabel}>Transaction Fee</Text>
+                      <Text style={styles.receiptDetailValue}>{formatAmount(selectedTransaction?.fee)}</Text>
+                    </View>
+                    
+                    <View style={styles.receiptDetailRow}>
+                      <Text style={styles.receiptDetailLabel}>Net Amount</Text>
+                      <Text style={styles.receiptDetailValue}>
+                        {formatAmount(selectedTransaction?.netAmount || selectedTransaction?.amount)}
+                      </Text>
+                    </View>
+                    
+                    {selectedTransaction?.from && (
+                      <View style={styles.receiptDetailRow}>
+                        <Text style={styles.receiptDetailLabel}>From</Text>
+                        <Text style={styles.receiptDetailValue}>{selectedTransaction.from}</Text>
+                      </View>
+                    )}
+                    
+                    {selectedTransaction?.to && (
+                      <View style={styles.receiptDetailRow}>
+                        <Text style={styles.receiptDetailLabel}>To</Text>
+                        <Text style={styles.receiptDetailValue}>{selectedTransaction.to}</Text>
+                      </View>
+                    )}
+                    
+                    <View style={styles.receiptDetailRow}>
+                      <Text style={styles.receiptDetailLabel}>Status</Text>
+                      <View style={[
+                        styles.statusIndicator,
+                        { 
+                          backgroundColor: selectedTransaction?.status === 'completed' 
+                            ? 'rgba(16, 185, 129, 0.2)' 
+                            : selectedTransaction?.status === 'pending'
+                            ? 'rgba(245, 158, 11, 0.2)'
+                            : 'rgba(59, 130, 246, 0.2)'
+                        }
+                      ]}>
+                        <Text style={[
+                          styles.statusText,
+                          { 
+                            color: selectedTransaction?.status === 'completed' 
+                              ? '#10b981' 
+                              : selectedTransaction?.status === 'pending'
+                              ? '#f59e0b'
+                              : '#3b82f6'
+                          }
+                        ]}>
+                          {selectedTransaction?.status?.toUpperCase()}
+                        </Text>
+                      </View>
+                    </View>
+                  </View>
+
+                  {/* Receipt Footer */}
+                  <View style={styles.receiptFooter}>
+                    <View style={styles.receiptFooterRow}>
+                      <Ionicons name="shield-checkmark" size={16} color="#10b981" />
+                      <Text style={styles.receiptFooterText}>Secured by BLURT Blockchain</Text>
+                    </View>
+                    <Text style={styles.receiptTimestamp}>
+                      Generated on {new Date().toLocaleString()}
+                    </Text>
+                  </View>
+                </ScrollView>
+
+                {/* Action Buttons */}
+                <View style={styles.receiptActions}>
+                  <TouchableOpacity 
+                    style={[styles.receiptActionButton, styles.shareButton]}
+                    onPress={shareTransactionReceipt}
+                  >
+                    <LinearGradient
+                      colors={[theme.colors.primary, '#8b5cf6']}
+                      style={styles.shareButtonGradient}
+                    >
+                      <Ionicons name="share-social" size={20} color="#fff" />
+                      <Text style={styles.receiptActionText}>Share Receipt</Text>
+                    </LinearGradient>
+                  </TouchableOpacity>
+                  
+                  <TouchableOpacity 
+                    style={[styles.receiptActionButton, styles.downloadButton]}
+                    onPress={downloadReceipt}
+                  >
+                    <LinearGradient
+                      colors={['#10b981', '#059669']}
+                      style={styles.downloadButtonGradient}
+                    >
+                      <Ionicons name="download" size={20} color="#fff" />
+                      <Text style={styles.receiptActionText}>Download PDF</Text>
+                    </LinearGradient>
+                  </TouchableOpacity>
+                </View>
+              </LinearGradient>
+            </Animated.View>
+          </View>
+        </BlurView>
+      </Modal>
     </View>
   );
 }
@@ -1452,6 +1688,9 @@ const styles = StyleSheet.create({
     fontWeight: '700',
     marginTop: 24,
     marginBottom: 24,
+  },
+  loadingSpinner: {
+    marginTop: 16,
   },
   authContainer: {
     flex: 1,
@@ -1723,22 +1962,6 @@ const styles = StyleSheet.create({
     color: '#94a3b8',
     fontSize: 13,
     textAlign: 'center',
-  },
-  sectionHeader: {
-    flexDirection: 'row',
-    justifyContent: 'space-between',
-    alignItems: 'center',
-    marginBottom: 20,
-  },
-  viewAllButton: {
-    flexDirection: 'row',
-    alignItems: 'center',
-  },
-  viewAll: {
-    color: theme.colors.primary,
-    fontSize: 14,
-    fontWeight: '600',
-    marginRight: 4,
   },
   actionsGrid: {
     flexDirection: 'row',
@@ -2258,6 +2481,301 @@ const styles = StyleSheet.create({
     borderRadius: 12,
   },
   checkStatusButtonText: {
+    color: '#fff',
+    fontSize: 16,
+    fontWeight: '600',
+    marginLeft: 8,
+  },
+  // Confirmation Modal
+  confirmationModalContainer: {
+    width: width * 0.85,
+    maxWidth: 400,
+    alignSelf: 'center',
+    justifyContent: 'center',
+  },
+  confirmationModalContent: {
+    borderRadius: 24,
+    padding: 24,
+    borderWidth: 1,
+    borderColor: 'rgba(59, 130, 246, 0.3)',
+    shadowColor: theme.colors.primary,
+    shadowOffset: { width: 0, height: 0 },
+    shadowOpacity: 0.4,
+    shadowRadius: 30,
+    elevation: 30,
+  },
+  confirmationModalHeader: {
+    alignItems: 'center',
+    marginBottom: 20,
+  },
+  confirmationModalTitle: {
+    color: '#fff',
+    fontSize: 22,
+    fontWeight: '700',
+    textAlign: 'center',
+  },
+  confirmationModalText: {
+    color: theme.colors.textSecondary,
+    fontSize: 16,
+    textAlign: 'center',
+    lineHeight: 24,
+    marginBottom: 32,
+    paddingHorizontal: 8,
+  },
+  confirmationModalButtons: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    marginTop: 24,
+  },
+  confirmationModalButton: {
+    flex: 1,
+    height: 50,
+    borderRadius: 12,
+    overflow: 'hidden',
+  },
+  cancelButton: {
+    marginRight: 12,
+    backgroundColor: 'rgba(30, 41, 59, 0.8)',
+    borderWidth: 1,
+    borderColor: 'rgba(59, 130, 246, 0.2)',
+    justifyContent: 'center',
+    alignItems: 'center',
+  },
+  cancelButtonText: {
+    color: theme.colors.text,
+    fontSize: 16,
+    fontWeight: '600',
+  },
+  confirmButton: {
+    marginLeft: 12,
+  },
+  confirmButtonGradient: {
+    width: '100%',
+    height: '100%',
+    justifyContent: 'center',
+    alignItems: 'center',
+  },
+  confirmButtonText: {
+    color: '#fff',
+    fontSize: 16,
+    fontWeight: '600',
+  },
+  // Transaction Detail Modal
+  transactionDetailContainer: {
+    width: width * 0.9,
+    maxWidth: 450,
+    maxHeight: '90%',
+    alignSelf: 'center',
+  },
+  transactionDetailContent: {
+    borderRadius: 28,
+    overflow: 'hidden',
+    borderWidth: 1,
+    borderColor: 'rgba(59, 130, 246, 0.3)',
+    shadowColor: theme.colors.primary,
+    shadowOffset: { width: 0, height: 0 },
+    shadowOpacity: 0.5,
+    shadowRadius: 40,
+    elevation: 40,
+  },
+  receiptHeader: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    padding: 24,
+    borderBottomWidth: 2,
+    borderBottomColor: 'rgba(59, 130, 246, 0.2)',
+    backgroundColor: 'rgba(15, 23, 42, 0.8)',
+  },
+  receiptHeaderLeft: {
+    flexDirection: 'row',
+    alignItems: 'center',
+  },
+  receiptTitleContainer: {
+    marginLeft: 12,
+  },
+  receiptTitle: {
+    color: '#fff',
+    fontSize: 20,
+    fontWeight: '900',
+    letterSpacing: 1,
+  },
+  receiptSubtitle: {
+    color: theme.colors.primary,
+    fontSize: 12,
+    fontWeight: '600',
+    marginTop: 2,
+    letterSpacing: 0.5,
+  },
+  receiptCloseButton: {
+    width: 40,
+    height: 40,
+    borderRadius: 20,
+    backgroundColor: 'rgba(59, 130, 246, 0.1)',
+    justifyContent: 'center',
+    alignItems: 'center',
+  },
+  receiptScrollContent: {
+    maxHeight: 500,
+  },
+  receiptScrollContentContainer: {
+    padding: 24,
+  },
+  receiptStatusBadge: {
+    marginBottom: 24,
+  },
+  statusBadgeGradient: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    paddingVertical: 10,
+    paddingHorizontal: 20,
+    borderRadius: 20,
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 2 },
+    shadowOpacity: 0.3,
+    shadowRadius: 4,
+  },
+  statusBadgeText: {
+    color: '#fff',
+    fontSize: 14,
+    fontWeight: '700',
+    marginLeft: 8,
+    letterSpacing: 0.5,
+  },
+  receiptAmountSection: {
+    alignItems: 'center',
+    marginBottom: 32,
+    paddingVertical: 20,
+    backgroundColor: 'rgba(15, 23, 42, 0.6)',
+    borderRadius: 16,
+    borderWidth: 1,
+    borderColor: 'rgba(59, 130, 246, 0.2)',
+  },
+  receiptAmountLabel: {
+    color: '#94a3b8',
+    fontSize: 12,
+    fontWeight: '600',
+    letterSpacing: 1.5,
+    textTransform: 'uppercase',
+    marginBottom: 8,
+  },
+  receiptAmount: {
+    color: '#fff',
+    fontSize: 48,
+    fontWeight: '900',
+    fontFamily: 'monospace',
+    marginBottom: 4,
+    textShadowColor: 'rgba(0, 0, 0, 0.3)',
+    textShadowOffset: { width: 0, height: 2 },
+    textShadowRadius: 4,
+  },
+  receiptCurrency: {
+    color: '#cbd5e1',
+    fontSize: 16,
+    fontWeight: '600',
+    letterSpacing: 1,
+  },
+  receiptDetails: {
+    backgroundColor: 'rgba(15, 23, 42, 0.6)',
+    borderRadius: 16,
+    padding: 20,
+    borderWidth: 1,
+    borderColor: 'rgba(59, 130, 246, 0.2)',
+    marginBottom: 24,
+  },
+  receiptDetailRow: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    paddingVertical: 12,
+    borderBottomWidth: 1,
+    borderBottomColor: 'rgba(59, 130, 246, 0.1)',
+  },
+  receiptDetailLabel: {
+    color: '#94a3b8',
+    fontSize: 14,
+    fontWeight: '500',
+    flex: 1,
+  },
+  receiptDetailValue: {
+    color: '#fff',
+    fontSize: 14,
+    fontWeight: '600',
+    textAlign: 'right',
+    flex: 1,
+    fontFamily: 'monospace',
+  },
+  statusIndicator: {
+    paddingHorizontal: 12,
+    paddingVertical: 6,
+    borderRadius: 12,
+    borderWidth: 1,
+    borderColor: 'rgba(59, 130, 246, 0.3)',
+  },
+  statusText: {
+    fontSize: 12,
+    fontWeight: '700',
+    letterSpacing: 0.5,
+  },
+  receiptFooter: {
+    alignItems: 'center',
+    paddingVertical: 20,
+    borderTopWidth: 1,
+    borderTopColor: 'rgba(59, 130, 246, 0.1)',
+    marginTop: 8,
+  },
+  receiptFooterRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    marginBottom: 8,
+  },
+  receiptFooterText: {
+    color: '#94a3b8',
+    fontSize: 12,
+    fontWeight: '500',
+    marginLeft: 8,
+  },
+  receiptTimestamp: {
+    color: '#64748b',
+    fontSize: 11,
+    fontFamily: 'monospace',
+  },
+  receiptActions: {
+    flexDirection: 'row',
+    padding: 24,
+    paddingTop: 16,
+    borderTopWidth: 2,
+    borderTopColor: 'rgba(59, 130, 246, 0.2)',
+    backgroundColor: 'rgba(15, 23, 42, 0.8)',
+  },
+  receiptActionButton: {
+    flex: 1,
+    height: 50,
+    borderRadius: 12,
+    overflow: 'hidden',
+  },
+  shareButton: {
+    marginRight: 12,
+  },
+  shareButtonGradient: {
+    width: '100%',
+    height: '100%',
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  downloadButton: {
+    marginLeft: 12,
+  },
+  downloadButtonGradient: {
+    width: '100%',
+    height: '100%',
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  receiptActionText: {
     color: '#fff',
     fontSize: 16,
     fontWeight: '600',

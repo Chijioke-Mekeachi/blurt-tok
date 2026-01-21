@@ -7,7 +7,6 @@ import {
   ScrollView,
   TouchableOpacity,
   ActivityIndicator,
-  Alert,
   Image,
   TextInput,
   Modal,
@@ -31,13 +30,16 @@ import { formatNumber, formatTimeAgo } from '../../utils/format';
 import { pickImage, takePhoto, getDefaultAvatarUrl } from '../../services/avatarService';
 import { LinearGradient } from 'expo-linear-gradient';
 import { BlurView } from 'expo-blur';
+import AsyncStorage from '@react-native-async-storage/async-storage';
+import { useToast } from '../../components/Toast';
 
 const { width, height } = Dimensions.get('window');
 const HEADER_HEIGHT = height * 0.3;
 
 export default function ProfileScreen() {
   const { user: profileUsername } = useLocalSearchParams();
-  const { user: currentUser, updateProfile, updateAvatar } = useAuth();
+  const { user: currentUser, updateProfile, updateAvatar, logout } = useAuth();
+  const { showToast } = useToast();
   
   // Use wallet for current user or viewing user (fix for non-existent users)
   const walletUsername = profileUsername || currentUser?.username;
@@ -63,6 +65,10 @@ export default function ProfileScreen() {
   const [isFollowing, setIsFollowing] = useState(false);
   const [editModalVisible, setEditModalVisible] = useState(false);
   const [avatarModalVisible, setAvatarModalVisible] = useState(false);
+  const [settingsModalVisible, setSettingsModalVisible] = useState(false);
+  const [logoutModalVisible, setLogoutModalVisible] = useState(false);
+  const [confirmationModalVisible, setConfirmationModalVisible] = useState(false);
+  const [confirmationData, setConfirmationData] = useState(null);
   const [refreshing, setRefreshing] = useState(false);
   const [profileExists, setProfileExists] = useState(true);
   
@@ -213,6 +219,7 @@ export default function ProfileScreen() {
         total_likes: 0,
         total_comments: 0
       });
+      showToast('Error loading profile', 'error');
     } finally {
       setLoading(false);
     }
@@ -225,11 +232,58 @@ export default function ProfileScreen() {
       refreshWallet(),
     ]);
     setRefreshing(false);
+    showToast('Profile refreshed', 'success');
+  };
+
+  const showConfirmationModal = (title, message, onConfirm) => {
+    setConfirmationData({ title, message, onConfirm });
+    setConfirmationModalVisible(true);
+  };
+
+  const handleLogout = () => {
+    showConfirmationModal(
+      'Logout',
+      'Are you sure you want to logout? This will clear all your user data.',
+      async () => {
+        try {
+          setLogoutModalVisible(false);
+          
+          // Clear all user data from AsyncStorage
+          await AsyncStorage.multiRemove([
+            'user',
+            'wallet_data',
+            'transactions',
+            'session_data',
+            'user_preferences'
+          ]);
+          
+          // Call logout from useAuth
+          const result = await logout();
+          
+          if (result.success) {
+            showToast('Logged out successfully', 'success');
+            // Clear any navigation state
+            setTimeout(() => {
+              router.replace('/auth');
+            }, 1000);
+          } else {
+            showToast(result.error || 'Failed to logout', 'error');
+          }
+        } catch (error) {
+          console.error('Logout error:', error);
+          showToast('Failed to logout', 'error');
+        }
+      }
+    );
+  };
+
+  const handleSettings = () => {
+    setSettingsModalVisible(true);
   };
 
   const handleFollow = async () => {
     if (!currentUser) {
-      Alert.alert('Login Required', 'Please login to follow users');
+      showToast('Please login to follow users', 'warning');
       router.push('/auth');
       return;
     }
@@ -246,34 +300,35 @@ export default function ProfileScreen() {
             ? prev.follower_count + 1 
             : Math.max(0, prev.follower_count - 1)
         }));
+        
+        showToast(
+          result.following 
+            ? `You are now following @${profileUsername}` 
+            : `You have unfollowed @${profileUsername}`,
+          'success'
+        );
       }
     } catch (error) {
-      Alert.alert('Error', error.message);
+      showToast(error.message, 'error');
     }
   };
 
   const handleSendReward = () => {
     if (!currentUser) {
-      Alert.alert('Login Required', 'Please login to send rewards');
-      router.push('/auth');
+      showToast('Please login to send rewards', 'warning');
+      router.push('/wallet');
       return;
     }
     
-    Alert.alert(
+    showConfirmationModal(
       'Send Reward',
       `Send BLURT to @${profileUsername}`,
-      [
-        { text: 'Cancel', style: 'cancel' },
-        { 
-          text: 'Continue', 
-          onPress: () => {
-            router.push({
-              pathname: '/wallet',
-              params: { transferTo: profileUsername }
-            });
-          }
-        }
-      ]
+      () => {
+        router.push({
+          pathname: '/wallet',
+          params: { transferTo: profileUsername }
+        });
+      }
     );
   };
 
@@ -306,7 +361,7 @@ export default function ProfileScreen() {
       setAvatarModalVisible(false);
     } catch (error) {
       console.error('Error picking image:', error);
-      Alert.alert('Error', error.message || 'Failed to pick image');
+      showToast(error.message || 'Failed to pick image', 'error');
     }
   };
 
@@ -319,7 +374,7 @@ export default function ProfileScreen() {
       setAvatarModalVisible(false);
     } catch (error) {
       console.error('Error taking photo:', error);
-      Alert.alert('Error', error.message || 'Failed to take photo');
+      showToast(error.message || 'Failed to take photo', 'error');
     }
   };
 
@@ -328,14 +383,14 @@ export default function ProfileScreen() {
       setAvatarLoading(true);
       const result = await updateAvatar(image);
       if (result.success) {
-        Alert.alert('Success', 'Profile photo updated successfully');
+        showToast('Profile photo updated successfully', 'success');
         loadProfile();
       } else {
-        Alert.alert('Error', 'Failed to update profile photo');
+        showToast('Failed to update profile photo', 'error');
       }
     } catch (error) {
       console.error('Error uploading avatar:', error);
-      Alert.alert('Error', error.message || 'Failed to upload image');
+      showToast(error.message || 'Failed to upload image', 'error');
     } finally {
       setAvatarLoading(false);
     }
@@ -360,12 +415,12 @@ export default function ProfileScreen() {
     try {
       const result = await updateProfile(editForm);
       if (result.success) {
-        Alert.alert('Success', 'Profile updated successfully');
+        showToast('Profile updated successfully', 'success');
         setEditModalVisible(false);
         loadProfile();
       }
     } catch (error) {
-      Alert.alert('Error', error.message);
+      showToast(error.message, 'error');
     }
   };
 
@@ -745,6 +800,13 @@ export default function ProfileScreen() {
                       title="MY WALLET"
                       onPress={() => router.push('/wallet')}
                       variant="primary"
+                      size="small"
+                      style={styles.actionButton}
+                    />
+                    <NeonButton
+                      title="SETTINGS"
+                      onPress={handleSettings}
+                      variant="accent"
                       size="small"
                       style={styles.actionButton}
                     />
@@ -1148,6 +1210,228 @@ export default function ProfileScreen() {
         </BlurView>
       </Modal>
 
+      {/* Settings Modal */}
+      <Modal
+        animationType="slide"
+        transparent={true}
+        visible={settingsModalVisible}
+        onRequestClose={() => setSettingsModalVisible(false)}
+        statusBarTranslucent
+      >
+        <BlurView intensity={90} style={StyleSheet.absoluteFill}>
+          <View style={styles.modalOverlay}>
+            <Animated.View 
+              style={[
+                styles.modalContainer,
+                { opacity: fadeAnim, transform: [{ scale: scaleAnim }] }
+              ]}
+            >
+              <LinearGradient
+                colors={['rgba(30, 41, 59, 0.95)', 'rgba(15, 23, 42, 0.98)']}
+                style={styles.modalContent}
+              >
+                <View style={styles.modalHeader}>
+                  <View style={styles.modalHeaderLeft}>
+                    <Ionicons name="settings" size={24} color={theme.colors.primary} />
+                    <Text style={styles.modalTitle}>Settings</Text>
+                  </View>
+                  <TouchableOpacity 
+                    style={styles.modalCloseButton}
+                    onPress={() => setSettingsModalVisible(false)}
+                  >
+                    <Ionicons name="close" size={24} color={theme.colors.text} />
+                  </TouchableOpacity>
+                </View>
+                
+                <ScrollView style={styles.modalContentScroll} showsVerticalScrollIndicator={false}>
+                  {/* Account Settings */}
+                  <View style={styles.settingsSection}>
+                    <Text style={styles.settingsSectionTitle}>ACCOUNT</Text>
+                    
+                    <TouchableOpacity style={styles.settingItem}>
+                      <View style={styles.settingIconContainer}>
+                        <Ionicons name="notifications" size={22} color={theme.colors.primary} />
+                      </View>
+                      <View style={styles.settingTextContainer}>
+                        <Text style={styles.settingTitle}>Notifications</Text>
+                        <Text style={styles.settingSubtitle}>Manage your notification preferences</Text>
+                      </View>
+                      <Ionicons name="chevron-forward" size={20} color={theme.colors.textSecondary} />
+                    </TouchableOpacity>
+                    
+                    <TouchableOpacity style={styles.settingItem}>
+                      <View style={styles.settingIconContainer}>
+                        <Ionicons name="shield" size={22} color={theme.colors.primary} />
+                      </View>
+                      <View style={styles.settingTextContainer}>
+                        <Text style={styles.settingTitle}>Privacy</Text>
+                        <Text style={styles.settingSubtitle}>Control your privacy settings</Text>
+                      </View>
+                      <Ionicons name="chevron-forward" size={20} color={theme.colors.textSecondary} />
+                    </TouchableOpacity>
+                    
+                    <TouchableOpacity style={styles.settingItem}>
+                      <View style={styles.settingIconContainer}>
+                        <Ionicons name="lock-closed" size={22} color={theme.colors.primary} />
+                      </View>
+                      <View style={styles.settingTextContainer}>
+                        <Text style={styles.settingTitle}>Security</Text>
+                        <Text style={styles.settingSubtitle}>Change password, 2FA, etc.</Text>
+                      </View>
+                      <Ionicons name="chevron-forward" size={20} color={theme.colors.textSecondary} />
+                    </TouchableOpacity>
+                  </View>
+
+                  {/* App Settings */}
+                  <View style={styles.settingsSection}>
+                    <Text style={styles.settingsSectionTitle}>APP</Text>
+                    
+                    <TouchableOpacity style={styles.settingItem}>
+                      <View style={styles.settingIconContainer}>
+                        <Ionicons name="moon" size={22} color={theme.colors.primary} />
+                      </View>
+                      <View style={styles.settingTextContainer}>
+                        <Text style={styles.settingTitle}>Theme</Text>
+                        <Text style={styles.settingSubtitle}>Dark mode is enabled</Text>
+                      </View>
+                      <Ionicons name="chevron-forward" size={20} color={theme.colors.textSecondary} />
+                    </TouchableOpacity>
+                    
+                    <TouchableOpacity style={styles.settingItem}>
+                      <View style={styles.settingIconContainer}>
+                        <Ionicons name="language" size={22} color={theme.colors.primary} />
+                      </View>
+                      <View style={styles.settingTextContainer}>
+                        <Text style={styles.settingTitle}>Language</Text>
+                        <Text style={styles.settingSubtitle}>English (US)</Text>
+                      </View>
+                      <Ionicons name="chevron-forward" size={20} color={theme.colors.textSecondary} />
+                    </TouchableOpacity>
+                    
+                    <TouchableOpacity style={styles.settingItem}>
+                      <View style={styles.settingIconContainer}>
+                        <Ionicons name="help-circle" size={22} color={theme.colors.primary} />
+                      </View>
+                      <View style={styles.settingTextContainer}>
+                        <Text style={styles.settingTitle}>Help & Support</Text>
+                        <Text style={styles.settingSubtitle}>FAQ, contact us, report issues</Text>
+                      </View>
+                      <Ionicons name="chevron-forward" size={20} color={theme.colors.textSecondary} />
+                    </TouchableOpacity>
+                    
+                    <TouchableOpacity style={styles.settingItem}>
+                      <View style={styles.settingIconContainer}>
+                        <Ionicons name="document-text" size={22} color={theme.colors.primary} />
+                      </View>
+                      <View style={styles.settingTextContainer}>
+                        <Text style={styles.settingTitle}>Terms & Privacy</Text>
+                        <Text style={styles.settingSubtitle}>View our terms and privacy policy</Text>
+                      </View>
+                      <Ionicons name="chevron-forward" size={20} color={theme.colors.textSecondary} />
+                    </TouchableOpacity>
+                  </View>
+
+                  {/* About Section */}
+                  <View style={styles.settingsSection}>
+                    <Text style={styles.settingsSectionTitle}>ABOUT</Text>
+                    
+                    <View style={styles.aboutItem}>
+                      <Text style={styles.aboutLabel}>App Version</Text>
+                      <Text style={styles.aboutValue}>1.0.0</Text>
+                    </View>
+                    
+                    <View style={styles.aboutItem}>
+                      <Text style={styles.aboutLabel}>Build Number</Text>
+                      <Text style={styles.aboutValue}>2024.12.01</Text>
+                    </View>
+                    
+                    <View style={styles.aboutItem}>
+                      <Text style={styles.aboutLabel}>Last Updated</Text>
+                      <Text style={styles.aboutValue}>December 2024</Text>
+                    </View>
+                  </View>
+
+                  {/* Logout Button */}
+                  <TouchableOpacity 
+                    style={styles.logoutButton}
+                    onPress={() => {
+                      setSettingsModalVisible(false);
+                      setTimeout(() => handleLogout(), 300);
+                    }}
+                  >
+                    <LinearGradient
+                      colors={['#ef4444', '#dc2626']}
+                      style={styles.logoutButtonGradient}
+                    >
+                      <Ionicons name="log-out" size={20} color="#fff" style={styles.logoutIcon} />
+                      <Text style={styles.logoutButtonText}>Logout</Text>
+                    </LinearGradient>
+                  </TouchableOpacity>
+                </ScrollView>
+              </LinearGradient>
+            </Animated.View>
+          </View>
+        </BlurView>
+      </Modal>
+
+      {/* Confirmation Modal */}
+      <Modal
+        animationType="fade"
+        transparent={true}
+        visible={confirmationModalVisible}
+        onRequestClose={() => setConfirmationModalVisible(false)}
+      >
+        <BlurView intensity={90} style={StyleSheet.absoluteFill}>
+          <View style={styles.modalOverlay}>
+            <Animated.View 
+              style={[
+                styles.confirmationModalContainer,
+                { opacity: fadeAnim, transform: [{ scale: scaleAnim }] }
+              ]}
+            >
+              <LinearGradient
+                colors={['rgba(30, 41, 59, 0.95)', 'rgba(15, 23, 42, 0.98)']}
+                style={styles.confirmationModalContent}
+              >
+                <View style={styles.confirmationModalHeader}>
+                  <Text style={styles.confirmationModalTitle}>
+                    {confirmationData?.title}
+                  </Text>
+                </View>
+                
+                <Text style={styles.confirmationModalText}>
+                  {confirmationData?.message}
+                </Text>
+                
+                <View style={styles.confirmationModalButtons}>
+                  <TouchableOpacity 
+                    style={[styles.confirmationModalButton, styles.cancelButton]}
+                    onPress={() => setConfirmationModalVisible(false)}
+                  >
+                    <Text style={styles.cancelButtonText}>Cancel</Text>
+                  </TouchableOpacity>
+                  
+                  <TouchableOpacity 
+                    style={[styles.confirmationModalButton, styles.confirmButton]}
+                    onPress={() => {
+                      setConfirmationModalVisible(false);
+                      confirmationData?.onConfirm?.();
+                    }}
+                  >
+                    <LinearGradient
+                      colors={[theme.colors.primary, '#8b5cf6']}
+                      style={styles.confirmButtonGradient}
+                    >
+                      <Text style={styles.confirmButtonText}>Confirm</Text>
+                    </LinearGradient>
+                  </TouchableOpacity>
+                </View>
+              </LinearGradient>
+            </Animated.View>
+          </View>
+        </BlurView>
+      </Modal>
+
       {/* Avatar Options Modal */}
       <Modal
         animationType="fade"
@@ -1362,7 +1646,6 @@ const styles = StyleSheet.create({
     padding: 16,
     fontStyle: 'italic',
   },
-  // Existing styles from previous version continue below...
   loadingContainer: {
     flex: 1,
     justifyContent: 'center',
@@ -1655,7 +1938,8 @@ const styles = StyleSheet.create({
   },
   actionButton: {
     marginHorizontal: 8,
-    minWidth: 140,
+    minWidth: 80,
+    maxWidth:100,
   },
   section: {
     paddingHorizontal: 24,
@@ -2055,4 +2339,165 @@ const styles = StyleSheet.create({
     textAlign: 'center',
     flex: 1,
   },
-});
+  // Settings modal styles
+  settingsSection: {
+    marginBottom: 24,
+    paddingHorizontal: 24,
+  },
+  settingsSectionTitle: {
+    color: '#94a3b8',
+    fontSize: 12,
+    fontWeight: '600',
+    letterSpacing: 1.5,
+    textTransform: 'uppercase',
+    marginBottom: 16,
+    marginTop: 8,
+  },
+  settingItem: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    backgroundColor: 'rgba(30, 41, 59, 0.8)',
+    borderRadius: 12,
+    padding: 16,
+    marginBottom: 12,
+    borderWidth: 1,
+    borderColor: 'rgba(59, 130, 246, 0.2)',
+  },
+  settingIconContainer: {
+    width: 40,
+    height: 40,
+    borderRadius: 20,
+    backgroundColor: 'rgba(59, 130, 246, 0.1)',
+    justifyContent: 'center',
+    alignItems: 'center',
+    marginRight: 16,
+  },
+  settingTextContainer: {
+    flex: 1,
+  },
+  settingTitle: {
+    color: theme.colors.text,
+    fontSize: 16,
+    fontWeight: '600',
+    marginBottom: 4,
+  },
+  settingSubtitle: {
+    color: theme.colors.textSecondary,
+    fontSize: 14,
+  },
+  aboutItem: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    backgroundColor: 'rgba(30, 41, 59, 0.8)',
+    borderRadius: 12,
+    padding: 16,
+    marginBottom: 12,
+    borderWidth: 1,
+    borderColor: 'rgba(59, 130, 246, 0.2)',
+  },
+  aboutLabel: {
+    color: theme.colors.text,
+    fontSize: 16,
+    fontWeight: '600',
+  },
+  aboutValue: {
+    color: theme.colors.textSecondary,
+    fontSize: 16,
+  },
+  logoutButton: {
+    marginHorizontal: 24,
+    marginBottom: 24,
+    marginTop: 16,
+    borderRadius: 12,
+    overflow: 'hidden',
+  },
+  logoutButtonGradient: {
+    paddingVertical: 16,
+    borderRadius: 12,
+    flexDirection: 'row',
+    justifyContent: 'center',
+    alignItems: 'center',
+  },
+  logoutIcon: {
+    marginRight: 12,
+  },
+  logoutButtonText: {
+    color: '#fff',
+    fontSize: 16,
+    fontWeight: '600',
+  },
+  // Confirmation Modal
+  confirmationModalContainer: {
+    width: width * 0.85,
+    maxWidth: 400,
+    alignSelf: 'center',
+    justifyContent: 'center',
+  },
+  confirmationModalContent: {
+    borderRadius: 24,
+    padding: 24,
+    borderWidth: 1,
+    borderColor: 'rgba(59, 130, 246, 0.3)',
+    shadowColor: theme.colors.primary,
+    shadowOffset: { width: 0, height: 0 },
+    shadowOpacity: 0.4,
+    shadowRadius: 30,
+    elevation: 30,
+  },
+  confirmationModalHeader: {
+    alignItems: 'center',
+    marginBottom: 20,
+  },
+  confirmationModalTitle: {
+    color: '#fff',
+    fontSize: 22,
+    fontWeight: '700',
+    textAlign: 'center',
+  },
+  confirmationModalText: {
+    color: theme.colors.textSecondary,
+    fontSize: 16,
+    textAlign: 'center',
+    lineHeight: 24,
+    marginBottom: 32,
+    paddingHorizontal: 8,
+  },
+  confirmationModalButtons: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    marginTop: 24,
+  },
+  confirmationModalButton: {
+    flex: 1,
+    height: 50,
+    borderRadius: 12,
+    overflow: 'hidden',
+  },
+  cancelButton: {
+    marginRight: 12,
+    backgroundColor: 'rgba(30, 41, 59, 0.8)',
+    borderWidth: 1,
+    borderColor: 'rgba(59, 130, 246, 0.2)',
+    justifyContent: 'center',
+    alignItems: 'center',
+  },
+  cancelButtonText: {
+    color: theme.colors.text,
+    fontSize: 16,
+    fontWeight: '600',
+  },
+  confirmButton: {
+    marginLeft: 12,
+  },
+  confirmButtonGradient: {
+    width: '100%',
+    height: '100%',
+    justifyContent: 'center',
+    alignItems: 'center',
+  },
+  confirmButtonText: {
+    color: '#fff',
+    fontSize: 16,
+    fontWeight: '600',
+  },
+}); 

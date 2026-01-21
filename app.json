@@ -19,7 +19,8 @@
         "monochromeImage": "./assets/logo2.png"
       },
       "edgeToEdgeEnabled": true,
-      "predictiveBackGestureEnabled": false
+      "predictiveBackGestureEnabled": false,
+      "package": "com.chijioke2007.blurttok"
     },
     "web": {
       "output": "static",
